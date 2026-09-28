@@ -986,11 +986,6 @@ function Transcript({ detail, promptTarget }: {
             <button aria-label="Find in conversation" className="conversation-search-toggle" onClick={() => setFindOpen(true)}><IconSearch size={14} /></button>
           </Tooltip>
         )}
-        {detail.messages.length > transcriptWindowSize && (
-          <span className="conversation-range" aria-live="polite">
-            Showing {formatNumber(range.start + 1)}–{formatNumber(range.end)} of {formatNumber(detail.messages.length)}
-          </span>
-        )}
       </div>
       <div className="transcript" id="transcript" ref={scrollRef} onScroll={event => {
         const element = event.currentTarget
