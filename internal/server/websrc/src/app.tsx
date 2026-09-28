@@ -6,6 +6,10 @@ import {
   IconChevronRight,
   IconCode,
   IconCopy,
+  IconLayoutSidebarLeftCollapse,
+  IconLayoutSidebarLeftExpand,
+  IconLayoutSidebarRightCollapse,
+  IconLayoutSidebarRightExpand,
   IconMenu2,
   IconMessageCircle,
   IconGitBranch,
@@ -72,6 +76,12 @@ export function App() {
   const [deleting, setDeleting] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [mobilePickerOpen, setMobilePickerOpen] = useState(() => !new URLSearchParams(location.search).get('session'))
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('closeview.sidebar.collapsed') === '1' } catch { return false }
+  })
+  const [outlineCollapsed, setOutlineCollapsed] = useState(() => {
+    try { return localStorage.getItem('closeview.outline.collapsed') === '1' } catch { return false }
+  })
   const [error, setError] = useState('')
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(() => new Set())
   const [detailRevision, setDetailRevision] = useState(0)
@@ -160,6 +170,14 @@ export function App() {
     if (mcpFetchedAtRef.current && Date.now() - mcpFetchedAtRef.current < viewCacheMs) return
     void loadMCP(mcpFetchedAtRef.current > 0)
   }, [loadMCP, view])
+
+  useEffect(() => {
+    try { localStorage.setItem('closeview.sidebar.collapsed', sidebarCollapsed ? '1' : '0') } catch { /* Storage is optional. */ }
+  }, [sidebarCollapsed])
+
+  useEffect(() => {
+    try { localStorage.setItem('closeview.outline.collapsed', outlineCollapsed ? '1' : '0') } catch { /* Storage is optional. */ }
+  }, [outlineCollapsed])
 
   useEffect(() => {
     if (view !== 'sessions' || !activeID) {
@@ -374,12 +392,20 @@ export function App() {
     else void loadCatalog(true)
   }
 
+  function toggleSidebar() {
+    if (window.matchMedia('(max-width: 720px)').matches) {
+      setMobilePickerOpen(false)
+      return
+    }
+    setSidebarCollapsed(current => !current)
+  }
+
   return (
-    <div className={cn('app-shell', view !== 'sessions' && 'library-shell', mobilePickerOpen && 'mobile-picker-open')}>
-      <aside id="sessions-panel" className={cn('session-sidebar', mobilePickerOpen ? 'mobile-open' : 'mobile-collapsed')}>
+    <div className={cn('app-shell', view !== 'sessions' && 'library-shell', sidebarCollapsed && 'sidebar-collapsed', outlineCollapsed && 'prompts-collapsed', mobilePickerOpen && 'mobile-picker-open')}>
+      <aside id="sessions-panel" className={cn('session-sidebar', sidebarCollapsed && 'sidebar-collapsed', mobilePickerOpen ? 'mobile-open' : 'mobile-collapsed')}>
         <PanelResize side="left" />
         <div className="brand-row">
-          <svg width={28} height={28} viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
+          <svg width={20} height={20} viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
             <circle cx={16} cy={16} r={11.5} />
             <path d="M13.5 14h5M13.5 18h3.5" />
           </svg>
@@ -495,6 +521,7 @@ export function App() {
           )}
         </div>
 
+        <SidebarToggle side="left" collapsed={sidebarCollapsed} onToggle={toggleSidebar} />
       </aside>
 
       <button
@@ -543,7 +570,7 @@ export function App() {
       </main>
 
       {view === 'sessions' && (
-        <aside id="prompts-panel" className="outline-panel">
+        <aside id="prompts-panel" className={cn('outline-panel', outlineCollapsed && 'prompts-collapsed')}>
           <PanelResize side="right" />
           <div className="outline-title">Prompts</div>
           <div className="outline-list">
@@ -558,6 +585,7 @@ export function App() {
             ))}
             {detail && !detail.messages.some(message => message.role === 'user') && <p>No user prompts.</p>}
           </div>
+          <SidebarToggle side="right" collapsed={outlineCollapsed} onToggle={() => setOutlineCollapsed(current => !current)} />
         </aside>
       )}
 
@@ -869,17 +897,6 @@ function Transcript({ detail, promptTarget }: {
     if (element) setShowLatest(element.scrollHeight - element.scrollTop - element.clientHeight > 400)
   }, [detail.messages, range])
 
-  const totals = useMemo(() => detail.messages.reduce((sum, message) => ({
-    input: sum.input + message.tokensInput,
-    output: sum.output + message.tokensOutput,
-    cached: sum.cached + message.tokensCacheRead,
-    written: sum.written + message.tokensCacheWrite,
-  }), { input: 0, output: 0, cached: 0, written: 0 }), [detail.messages])
-  const usage = detail.usage
-  const input = usage?.input_tokens ?? totals.input
-  const output = usage?.output_tokens ?? totals.output
-  const cached = usage?.cached_input_tokens ?? totals.cached
-  const recorded = input + output + cached + totals.written > 0
   const toolsByMessage = useMemo(() => {
     const grouped = new Map<string, ToolCall[]>()
     for (const tool of detail.toolCalls ?? []) grouped.set(tool.messageId, [...(grouped.get(tool.messageId) ?? []), tool])
@@ -974,9 +991,6 @@ function Transcript({ detail, promptTarget }: {
             Showing {formatNumber(range.start + 1)}–{formatNumber(range.end)} of {formatNumber(detail.messages.length)}
           </span>
         )}
-        <div className="conversation-totals" aria-label="Recorded session token usage">
-          {recorded ? <><span title={`Input: ${formatNumber(input)} tokens`}>Input <b>{formatTokens(input)}</b></span><span title={`Output: ${formatNumber(output)} tokens`}>Output <b>{formatTokens(output)}</b></span>{cached > 0 && <span title={`Cache read: ${formatNumber(cached)} tokens`}>Cache read <b>{formatTokens(cached)}</b></span>}{totals.written > 0 && <span title={`Cache write: ${formatNumber(totals.written)} tokens`}>Cache write <b>{formatTokens(totals.written)}</b></span>}{usage && usage.reasoning_output_tokens > 0 && <span title={`Reasoning: ${formatNumber(usage.reasoning_output_tokens)} tokens`}>Reasoning <b>{formatTokens(usage.reasoning_output_tokens)}</b></span>}</> : <span>Token usage not recorded</span>}
-        </div>
       </div>
       <div className="transcript" id="transcript" ref={scrollRef} onScroll={event => {
         const element = event.currentTarget
@@ -1047,7 +1061,7 @@ function MessageCard({ message, source, tools }: { message: Message; source: Sou
         <div className={cn('message-content', (message.role === 'user' || message.role === 'assistant') && 'markdown-content')}>
           {message.role === 'user' || message.role === 'assistant' ? <MarkdownContent text={message.content} /> : <RichText text={message.content} />}
         </div>
-        <MessageUsage message={message} />
+        {message.role === 'assistant' && message.model && <div className="message-model">{message.model}</div>}
         {tools.map(tool => <ToolCard key={tool.id} tool={tool} />)}
       </div>
     </article>
@@ -1083,10 +1097,26 @@ function RichText({ text }: { text: string }) {
   return <>{chunks.map((chunk, index) => index % 3 === 2 ? <pre key={index}><code>{chunk.replace(/\n$/, '')}</code></pre> : index % 3 === 1 ? null : <p key={index}>{chunk}</p>)}</>
 }
 
-function MessageUsage({ message }: { message: Message }) {
-  if (message.role !== 'assistant') return null
-  const fields = [['Input', message.tokensInput], ['Output', message.tokensOutput], ['Reasoning', message.tokensReasoning], ['Cache read', message.tokensCacheRead], ['Cache write', message.tokensCacheWrite]] as const
-  return <div className="message-usage">{message.model && <span className="usage-model">{message.model}</span>}{fields.filter(([, count]) => count > 0).map(([label, count]) => <span key={label} title={`${label}: ${formatNumber(count)} tokens`}>{label} <b>{formatTokens(count)}</b></span>)}{message.cost > 0 && <span>${message.cost.toFixed(4)}</span>}</div>
+function SidebarToggle({ side, collapsed, onToggle }: { side: 'left' | 'right'; collapsed: boolean; onToggle: () => void }) {
+  const label = `${collapsed ? 'Expand' : 'Collapse'} ${side} sidebar`
+  const Icon = side === 'left'
+    ? (collapsed ? IconLayoutSidebarLeftExpand : IconLayoutSidebarLeftCollapse)
+    : (collapsed ? IconLayoutSidebarRightExpand : IconLayoutSidebarRightCollapse)
+  return (
+    <div className="sidebar-footer">
+      <button
+        type="button"
+        className="sidebar-collapse-toggle"
+        aria-label={label}
+        title={label}
+        aria-expanded={!collapsed}
+        aria-controls={side === 'left' ? 'sessions-panel' : 'prompts-panel'}
+        onClick={onToggle}
+      >
+        <Icon size={18} stroke={1.75} aria-hidden="true" />
+      </button>
+    </div>
+  )
 }
 
 function SessionListSkeleton() {
@@ -1100,7 +1130,6 @@ function DetailSkeleton() {
 function roleLabel(role: string) { return role === 'user' ? 'You' : role === 'assistant' ? 'Assistant' : role === 'system' ? 'Context' : role === 'tool' ? 'Tool' : role || 'Message' }
 function firstLine(value: string) { return value.trim().split('\n').find(Boolean)?.slice(0, 90) || 'Prompt' }
 function formatNumber(value: number) { return new Intl.NumberFormat().format(value) }
-function formatTokens(value: number) { return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value) }
 function formatDate(value: string) { if (!value) return 'Unknown date'; const date = new Date(value); return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date) }
 function formatTime(value: string) { if (!value) return ''; const date = new Date(value); return Number.isNaN(date.valueOf()) ? '' : new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(date) }
 function relativeTime(value: string) {
