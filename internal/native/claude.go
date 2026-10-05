@@ -91,6 +91,25 @@ func (a *claudeAdapter) Get(_ context.Context, nativeID string) (Detail, error) 
 	}
 	parsed.detail.Session.NativeID = nativeID
 	parsed.detail.Session.ThreadID = parsed.threadID
+	if parentID := parsed.detail.Session.ParentThreadID; parentID != "" && filepath.Base(parentID) == parentID && parentID != "." && parentID != ".." {
+		parentDir := filepath.Dir(path)
+		if filepath.Base(parentDir) == "subagents" {
+			parentDir = filepath.Dir(filepath.Dir(parentDir))
+		}
+		parentPath := filepath.Join(parentDir, parentID+".jsonl")
+		if info, statErr := os.Stat(parentPath); statErr == nil && info.Mode().IsRegular() {
+			if relative, relErr := filepath.Rel(filepath.Join(a.home, "projects"), parentPath); relErr == nil {
+				parsed.detail.Session.ParentID = EncodeID(a.Name(), filepath.ToSlash(relative))
+			}
+		}
+	}
+	// Only inspect this thread's subagent files, never the entire project catalog.
+	children, _ := os.ReadDir(filepath.Join(filepath.Dir(path), parsed.threadID, "subagents"))
+	for _, child := range children {
+		if child.Type().IsRegular() && strings.HasSuffix(strings.ToLower(child.Name()), ".jsonl") {
+			parsed.detail.Session.ChildCount++
+		}
+	}
 	return parsed.detail, nil
 }
 
@@ -117,16 +136,9 @@ func (a *claudeAdapter) Delete(_ context.Context, nativeID string) error {
 			_ = os.Rename(staged, path)
 		}
 	}()
-	if parsed.threadID != "" {
-		if err := rewriteJSONLinesWithout(filepath.Join(a.home, "history.jsonl"), func(line json.RawMessage) bool {
-			var entry struct {
-				SessionID string `json:"sessionId"`
-			}
-			return json.Unmarshal(line, &entry) == nil && entry.SessionID == parsed.threadID
-		}); err != nil {
-			return err
-		}
-	}
+	// history.jsonl is a shared append-only journal. Native Claude writers do
+	// not honor our locks, so replacing it can discard their concurrent writes.
+	// Retain its metadata; the viewer lists transcripts, not journal entries.
 	if err := os.Remove(staged); err != nil {
 		return err
 	}

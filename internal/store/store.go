@@ -304,6 +304,16 @@ func (d *DB) addColumnIfMissing(ctx context.Context, table string, column string
 }
 
 func (d *DB) InsertSession(ctx context.Context, input NewSession) (Session, error) {
+	return d.insertSession(ctx, input, false)
+}
+
+// ReplaceSession replaces a source archive and its search rows in one transaction.
+// A failed insert leaves the previous archive intact.
+func (d *DB) ReplaceSession(ctx context.Context, input NewSession) (Session, error) {
+	return d.insertSession(ctx, input, true)
+}
+
+func (d *DB) insertSession(ctx context.Context, input NewSession, replace bool) (Session, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if input.Source == "" {
 		input.Source = "unknown"
@@ -336,6 +346,15 @@ func (d *DB) InsertSession(ctx context.Context, input NewSession) (Session, erro
 		return Session{}, err
 	}
 	defer tx.Rollback()
+
+	if replace && input.SourceHash != "" {
+		if _, err := tx.ExecContext(ctx, `delete from messages_fts where session_id in (select id from sessions where source_hash = ?)`, input.SourceHash); err != nil {
+			return Session{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `delete from sessions where source_hash = ?`, input.SourceHash); err != nil {
+			return Session{}, err
+		}
+	}
 
 	_, err = tx.ExecContext(ctx, `insert into sessions (id, source, provider, model, agent, title, project_path, created_at, imported_at, message_count, raw_path, source_hash) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.Source, session.Provider, session.Model, session.Agent, session.Title, session.ProjectPath, session.CreatedAt, session.ImportedAt, session.MessageCount, session.RawPath, session.SourceHash)

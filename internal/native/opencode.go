@@ -26,6 +26,11 @@ func NewOpenCode(path string) Adapter {
 func (a *openCodeAdapter) Name() string { return "opencode" }
 
 func (a *openCodeAdapter) List(ctx context.Context) ([]Session, error) {
+	return a.summaries(ctx, "")
+}
+
+// summaries reads one session for detail views; only catalog requests scan all.
+func (a *openCodeAdapter) summaries(ctx context.Context, nativeID string) ([]Session, error) {
 	if _, err := os.Stat(a.path); err != nil {
 		if os.IsNotExist(err) {
 			return []Session{}, nil
@@ -42,15 +47,25 @@ func (a *openCodeAdapter) List(ctx context.Context) ([]Session, error) {
 		return nil, err
 	}
 	var queries []string
+	var args []any
 	for _, source := range sources {
+		filter, children, parentExists := "", "0", "0"
+		if nativeID != "" {
+			filter = ` where s.id = ?`
+			args = append(args, nativeID)
+			if source.Parent != "''" {
+				children = `(select count(*) from ` + source.Table + ` c where c.parent_id = s.id)`
+				parentExists = `exists(select 1 from ` + source.Table + ` p where p.id = ` + source.Parent + `)`
+			}
+		}
 		queries = append(queries, `
 		select s.id as id, `+source.Parent+`, coalesce(s.title, ''), coalesce(s.directory, ''),
 			coalesce(s.agent, ''), coalesce(s.model, ''),
 			coalesce(s.time_created, 0), coalesce(s.time_updated, 0) as updated,
-			(select count(*) from `+source.Messages+` m where m.session_id = s.id)
-		from `+source.Table+` s`)
+			(select count(*) from `+source.Messages+` m where m.session_id = s.id), `+children+`, `+parentExists+`
+		from `+source.Table+` s`+filter)
 	}
-	rows, err := db.QueryContext(ctx, strings.Join(queries, " union all ")+` order by updated desc, id desc`)
+	rows, err := db.QueryContext(ctx, strings.Join(queries, " union all ")+` order by updated desc, id desc`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read OpenCode sessions: %w", err)
 	}
@@ -59,17 +74,21 @@ func (a *openCodeAdapter) List(ctx context.Context) ([]Session, error) {
 	for rows.Next() {
 		var id, parentID, title, project, agent, modelData string
 		var created, updated int64
-		var count int
-		if err := rows.Scan(&id, &parentID, &title, &project, &agent, &modelData, &created, &updated, &count); err != nil {
+		var count, children, parentExists int
+		if err := rows.Scan(&id, &parentID, &title, &project, &agent, &modelData, &created, &updated, &count, &children, &parentExists); err != nil {
 			return nil, err
 		}
 		provider, model := openCodeModel(modelData)
-		sessions = append(sessions, Session{
+		session := Session{
 			NativeID: id, ThreadID: id, ParentThreadID: parentID, Title: titleFallback(title, "", project, id),
 			ProjectPath: project, Agent: agent, Provider: provider, Model: model,
 			CreatedAt: sourceTime(created), UpdatedAt: sourceTime(updated),
-			MessageCount: count,
-		})
+			MessageCount: count, ChildCount: children,
+		}
+		if parentExists != 0 {
+			session.ParentID = EncodeID(a.Name(), parentID)
+		}
+		sessions = append(sessions, session)
 	}
 	return sessions, rows.Err()
 }
@@ -83,7 +102,7 @@ func (a *openCodeAdapter) Get(ctx context.Context, nativeID string) (Detail, err
 		if session.SourceHash == "opencode-db:"+nativeID {
 			detail := detailFromNewSession(session, nativeID)
 			detail.Warnings = append(detail.Warnings, warnings...)
-			listed, listErr := a.List(ctx)
+			listed, listErr := a.summaries(ctx, nativeID)
 			if listErr == nil {
 				for _, summary := range listed {
 					if summary.NativeID == nativeID {

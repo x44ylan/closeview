@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 var ErrNotFound = errors.New("session not found")
@@ -97,8 +98,11 @@ type Adapter interface {
 }
 
 type Manager struct {
-	adapters map[string]Adapter
-	order    []string
+	adapters      map[string]Adapter
+	order         []string
+	mu            sync.RWMutex
+	codexChildren map[string]int // child counts from the last explicit Codex catalog read
+	codexRevision uint64         // prevents an in-flight catalog read from undoing deletion invalidation
 }
 
 func New(adapters ...Adapter) *Manager {
@@ -155,6 +159,9 @@ func NewDefault() (*Manager, error) {
 }
 
 func (m *Manager) List(ctx context.Context, query, source string) Catalog {
+	m.mu.RLock()
+	codexRevision := m.codexRevision
+	m.mu.RUnlock()
 	catalog := Catalog{Sessions: []Session{}, Sources: []SourceStatus{}}
 	query = strings.ToLower(strings.TrimSpace(query))
 	for _, name := range m.order {
@@ -175,6 +182,24 @@ func (m *Manager) List(ctx context.Context, query, source string) Catalog {
 		}
 	}
 	linkSessionRelationships(catalog.Sessions)
+	var codexChildren map[string]int
+	for _, status := range catalog.Sources {
+		if status.Name == "codex" && status.Available {
+			codexChildren = make(map[string]int)
+		}
+	}
+	for _, session := range catalog.Sessions {
+		if session.Source == "codex" && codexChildren != nil {
+			codexChildren[session.ThreadID] = session.ChildCount
+		}
+	}
+	if codexChildren != nil {
+		m.mu.Lock()
+		if codexRevision == m.codexRevision {
+			m.codexChildren = codexChildren
+		}
+		m.mu.Unlock()
+	}
 	if query != "" {
 		matched := catalog.Sessions[:0]
 		for _, session := range catalog.Sessions {
@@ -214,15 +239,16 @@ func (m *Manager) Get(ctx context.Context, id string) (Detail, error) {
 	detail.Session.NativeID = nativeID
 	detail.Session.ID = EncodeID(adapter.Name(), nativeID)
 	detail.Session.IsSubsession = detail.Session.ParentThreadID != ""
-	if sessions, listErr := adapter.List(ctx); listErr == nil {
-		for _, session := range sessions {
-			if session.ThreadID == detail.Session.ParentThreadID {
-				detail.Session.ParentID = EncodeID(adapter.Name(), session.NativeID)
-			}
-			if session.ParentThreadID == detail.Session.ThreadID {
-				detail.Session.ChildCount++
-			}
+	// OpenCode and Claude resolve relationships locally. Codex has no direct
+	// child lookup, so reuse the last explicit catalog snapshot rather than
+	// paginating every thread whenever one conversation is opened.
+	if adapter.Name() == "codex" {
+		if detail.Session.ParentThreadID != "" {
+			detail.Session.ParentID = EncodeID(adapter.Name(), detail.Session.ParentThreadID)
 		}
+		m.mu.RLock()
+		detail.Session.ChildCount = m.codexChildren[detail.Session.ThreadID]
+		m.mu.RUnlock()
 	}
 	return detail, nil
 }
@@ -253,7 +279,16 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	return adapter.Delete(ctx, nativeID)
+	if err := adapter.Delete(ctx, nativeID); err != nil {
+		return err
+	}
+	if adapter.Name() == "codex" {
+		m.mu.Lock()
+		m.codexChildren = nil
+		m.codexRevision++
+		m.mu.Unlock()
+	}
+	return nil
 }
 
 func (m *Manager) resolve(id string) (Adapter, string, error) {

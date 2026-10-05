@@ -112,13 +112,7 @@ func persistSession(ctx context.Context, db *store.DB, session *store.NewSession
 	if err != nil {
 		return err
 	}
-	if exists && replaceExisting && !force {
-		if err := db.DeleteSessionByHash(ctx, session.SourceHash); err != nil {
-			return err
-		}
-		exists = false
-	}
-	if exists && !force {
+	if exists && !force && !replaceExisting {
 		result.SkippedCount++
 		result.Warnings = append(result.Warnings, fmt.Sprintf("%s: skipped duplicate import", label))
 		return nil
@@ -126,7 +120,11 @@ func persistSession(ctx context.Context, db *store.DB, session *store.NewSession
 	if exists && force {
 		session.SourceHash = session.SourceHash + ":force:" + randomSuffix()
 	}
-	if _, err := db.InsertSession(ctx, *session); err != nil {
+	insert := db.InsertSession
+	if replaceExisting && !force {
+		insert = db.ReplaceSession
+	}
+	if _, err := insert(ctx, *session); err != nil {
 		return err
 	}
 	result.SessionCount++

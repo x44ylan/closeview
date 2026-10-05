@@ -210,7 +210,10 @@ func TestClaudeListGetDelete(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(projectDir, "claude-test")); !os.IsNotExist(err) {
 		t.Fatalf("session artifact directory still exists: %v", err)
 	}
-	assertFileDoesNotContain(t, filepath.Join(home, "history.jsonl"), "claude-test")
+	history, err := os.ReadFile(filepath.Join(home, "history.jsonl"))
+	if err != nil || !strings.Contains(string(history), "claude-test") {
+		t.Fatalf("shared Claude history metadata must remain intact: %v", err)
+	}
 }
 
 func nativeSession(t *testing.T, sessions []Session, threadID string) Session {
